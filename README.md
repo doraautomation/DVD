@@ -1,8 +1,13 @@
 # Distributed PCA-KMeans Clustering with Thread-Based Blockchain Validation
 
-This project shows how to combine PCA (for dimensionality reduction), KMeans clustering, and a simple two-phase commit simulation for validating data, similar to how blockchains work.
+This project demonstrates a lightweight distributed system that combines:
 
-The code uses MPI for running tasks in parallel across processes and Python threads to simulate internal node validation.
+- **Feature reduction** using Principal Component Analysis (PCA)
+- **Clustering** with KMeans
+- **Feature-based sharding** — splitting the dataset across nodes by feature columns
+- **Blockchain-style validation** using a two-phase commit simulated with Python threads
+
+The system uses **MPI** to distribute tasks across processes, and **Python threads** to simulate internal node consensus (like in a sub-cluster or committee).
 
 ---
 
@@ -10,17 +15,17 @@ The code uses MPI for running tasks in parallel across processes and Python thre
 
 | File | Description |
 |------|-------------|
-| `parallel_kmeans_threads.py` | Clusters data rows using KMeans, validates each block using threads |
-| `pca_distributed_columns.py` | Splits data by columns, applies PCA, and runs commit validation with timing logs |
-| `wdbc.csv` | Input file – based on the Breast Cancer dataset from UCI |
+| `parallel_kmeans_threads.py` | Performs row-wise KMeans clustering after PCA, with thread-based validation |
+| `pca_distributed_columns.py` | Distributes dataset **by features**, runs PCA, and validates using commit-style consensus |
+| `wdbc.csv` | Input data (UCI Breast Cancer dataset in CSV format) |
 
 ---
 
 ## Setup
 
-### 1. Install Python Packages
+### Install Python Packages
 
-You’ll need Python 3.8 or later. Install the required packages with:
+Make sure you’re using Python 3.8 or higher. Then install the required libraries:
 
 ```bash
 pip install mpi4py numpy pandas scikit-learn
