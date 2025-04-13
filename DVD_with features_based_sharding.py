@@ -3,40 +3,35 @@ import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from concurrent.futures import ThreadPoolExecutor
 import time
 import hashlib
 import json
-import threading
+import sys
 
 def load_and_preprocess_data(filepath):
     data = pd.read_csv(filepath)
-    id_col = data['ID'].values
-    diag_col = data['Diagnosis'].values
-    data_features = data.drop(['ID', 'Diagnosis'], axis=1)
+    if 'ID' in data.columns: data = data.drop(columns='ID')
+    if 'Diagnosis' in data.columns: data = data.drop(columns='Diagnosis')
     scaler = StandardScaler()
-    data_scaled = scaler.fit_transform(data_features)
-    return data_scaled, id_col, diag_col
+    return scaler.fit_transform(data)
 
-def initialize_centroids(data, k):
-    indices = np.random.choice(data.shape[0], size=k, replace=False)
-    return data[indices, :]
-
-def assign_clusters(data, centroids):
-    distances = np.sqrt(((data - centroids[:, np.newaxis])**2).sum(axis=2))
-    return np.argmin(distances, axis=0)
-
-def compute_centroids(data, labels, k):
-    centroids = np.zeros((k, data.shape[1]))
-    for i in range(k):
-        points = data[labels == i]
-        if len(points) > 0:
-            centroids[i] = points.mean(axis=0)
-    return centroids
-
-def apply_pca(data, n_components):
+def evaluate_pca_quality(data, n_components=10, mse_threshold=0.01):
     pca = PCA(n_components=n_components)
     reduced = pca.fit_transform(data)
-    return reduced, pca, data
+    reconstructed = pca.inverse_transform(reduced)
+    mse = np.mean((data - reconstructed) ** 2)
+    return mse < mse_threshold, mse, reduced, pca, data
+
+def distribute_columns(data, comm):
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    n_cols = data.shape[1]
+    cols_per_rank = n_cols // size
+    remainder = n_cols % size
+    start = rank * cols_per_rank + min(rank, remainder)
+    end = start + cols_per_rank + (1 if rank < remainder else 0)
+    return data[:, start:end]
 
 def hash_data(data):
     data_string = json.dumps(data.tolist())
@@ -45,100 +40,69 @@ def hash_data(data):
 def simulate_blockchain_node(data, hash_value):
     return hash_data(data) == hash_value
 
-def simulate_blockchain_thread(data, hash_value, results, idx):
-    # Simulate validation by a thread (sub-cluster node)
-    results[idx] = simulate_blockchain_node(data, hash_value)
-
 def two_phase_commit(data, comm, sub_cluster_size=10):
     hash_value = hash_data(data)
-    results = [False] * sub_cluster_size
-    threads = []
+    with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
+        results = list(executor.map(simulate_blockchain_node, [data] * sub_cluster_size, [hash_value] * sub_cluster_size))
+    return sum(results) >= (sub_cluster_size * 0.51)
 
-    for i in range(sub_cluster_size):
-        t = threading.Thread(target=simulate_blockchain_thread, args=(data, hash_value, results, i))
-        threads.append(t)
-        t.start()
-
-    for t in threads:
-        t.join()
-
-    agreement_count = sum(results)
-    return agreement_count >= (sub_cluster_size * 0.51)
-
-def parallel_kmeans(data, id_col, diag_col, k, num_steps=100, n_components=None, local_steps=10):
+def main():
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
-    size = comm.Get_size()
     start_time = MPI.Wtime()
 
-    if rank == 0 and n_components is not None:
-        reduced_data, pca_model, original_data = apply_pca(data, n_components)
-        reconstructed = pca_model.inverse_transform(reduced_data)
-        mse = np.mean((original_data - reconstructed) ** 2)
-        print(f"[Rank 0] PCA Reconstruction MSE: {mse:.6f}")
-        data = reduced_data
+    filepath = 'wdbc.csv'
+    data = load_and_preprocess_data(filepath)
+
+    # Rank 0: PCA with MSE threshold check
+    if rank == 0:
+        passes_quality, mse, reduced_data, pca_model, original_data = evaluate_pca_quality(data)
+        if not passes_quality:
+            print(f"[Rank 0] PCA MSE quality check failed. MSE = {mse:.6f}. Must be < 0.01.")
+            sys.exit(0)
+        else:
+            print(f"[Rank 0] PCA quality check passed: MSE = {mse:.6f}")
     else:
-        data = None
+        reduced_data = None
 
     # Broadcast reduced data to all ranks
-    data = comm.bcast(data, root=0)
-    id_col = comm.bcast(id_col, root=0)
-    diag_col = comm.bcast(diag_col, root=0)
+    reduced_data = comm.bcast(reduced_data if rank == 0 else None, root=0)
 
-    # Distribute data and meta info
-    data_split = np.array_split(data, size, axis=0)
-    id_split = np.array_split(id_col, size)
-    diag_split = np.array_split(diag_col, size)
+    # Distribute features (columns) to each rank
+    local_data = distribute_columns(reduced_data, comm)
+    np.savetxt(f'reduced_data_rank_{rank}.csv', local_data, delimiter=",")
 
-    local_data = data_split[rank]
-    local_ids = id_split[rank]
-    local_diags = diag_split[rank]
+    # === PUSH STAGE (block commit approval) ===
+    push_start = MPI.Wtime()
+    commit_success = two_phase_commit(local_data, comm)
+    push_end = MPI.Wtime()
+    push_time = push_end - push_start
 
-    # Save initial local data
-    local_df = pd.DataFrame(local_data)
-    local_df.insert(0, 'Diagnosis', local_diags)
-    local_df.insert(0, 'ID', local_ids)
-    local_df.to_csv(f'clustered_data_rank_{rank}.csv', index=False)
-
-    centroids = initialize_centroids(data, k) if rank == 0 else None
-    centroids = comm.bcast(centroids, root=0)
-
-    for i in range(num_steps):
-        local_labels = assign_clusters(local_data, centroids)
-        local_centroids = compute_centroids(local_data, local_labels, k)
-
-        if (i + 1) % local_steps == 0 or i == num_steps - 1:
-            all_centroids = np.zeros_like(local_centroids)
-            comm.Allreduce(local_centroids, all_centroids, op=MPI.SUM)
-            centroids = all_centroids / size
-
-    # Two-phase commit with sub-cluster thread validation
-    if two_phase_commit(local_data, comm):
+    if commit_success:
         print(f"Rank {rank}: Commit approved and data stored.")
     else:
         print(f"Rank {rank}: Commit rejected due to insufficient consensus.")
 
-    # Final cluster assignment and size reporting
-    final_labels = assign_clusters(local_data, centroids)
-    local_cluster_sizes = np.array([np.sum(final_labels == i) for i in range(k)], dtype=np.int32)
-    total_cluster_sizes = np.zeros(k, dtype=np.int32)
-    comm.Reduce(local_cluster_sizes, total_cluster_sizes, op=MPI.SUM, root=0)
+    # === PULL STAGE (shared ledger sync) ===
+    pull_start = MPI.Wtime()
+    updated_ledger_block = comm.bcast("Block_XYZ" if rank == 0 else None, root=0)
+    local_ledger = updated_ledger_block  # simulate local sync
+    pull_end = MPI.Wtime()
+    pull_time = pull_end - pull_start
 
-    if rank == 0:
-        print("Cluster sizes (number of points in each cluster):")
-        for i, size in enumerate(total_cluster_sizes):
-            print(f"Cluster {i}: {size} nodes")
+    print(f"Rank {rank}: Push Time = {push_time:.6f} sec | Pull Time = {pull_time:.6f} sec")
+
+    # Collect performance stats at rank 0
+    all_push_times = comm.gather(push_time, root=0)
+    all_pull_times = comm.gather(pull_time, root=0)
 
     comm.Barrier()
     if rank == 0:
         end_time = MPI.Wtime()
-        print("All data processing and verification completed.")
-        print("Total time taken: {:.4f} seconds".format(end_time - start_time))
-        print("Final Centroids:\n", centroids)
+        print("=== Timing Summary ===")
+        print(f"Avg Push Time: {np.mean(all_push_times):.6f} sec")
+        print(f"Avg Pull Time: {np.mean(all_pull_times):.6f} sec")
+        print("Total Execution Time: {:.4f} seconds".format(end_time - start_time))
 
 if __name__ == "__main__":
-    filepath = 'wdbc.csv'
-    data, ids, diags = load_and_preprocess_data(filepath)
-    k = 5
-    n_components = 10
-    parallel_kmeans(data, ids, diags, k, n_components=n_components, local_steps=5)
+    main()
