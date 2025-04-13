@@ -1,4 +1,4 @@
-# Distributed PCA-KMeans Clustering with Thread-Based Blockchain Validation
+# DVD: Enabling Distributed Vector Data Management with High-Performance Distributed Ledgers for Scientific Computing
 
 This project demonstrates a lightweight distributed system that combines:
 
