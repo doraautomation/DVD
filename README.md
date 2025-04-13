@@ -15,9 +15,9 @@ The system uses **MPI** to distribute tasks across processes, and **Python threa
 
 | File | Description |
 |------|-------------|
-| `parallel_kmeans_threads.py` | Performs row-wise KMeans clustering after PCA, with thread-based validation |
-| `pca_distributed_columns.py` | Distributes dataset **by features**, runs PCA, and validates using commit-style consensus |
-| `wdbc.csv` | Input data (UCI Breast Cancer dataset in CSV format) |
+| `DVD_with_features_based_sharding.py` | Distributes dataset **by features**, runs PCA, and validates using **Two-Phase Qourum Commit** consensus protocol |
+| `DVD_with_k_means_clustering.py` | Performs row-wise KMeans clustering after PCA, with thread-based validation using **Two-Phase Qourum Commit** consensus protocol |
+| `wdbc.csv` | Input data (Breast Cancer dataset in CSV format) |
 
 ---
 
