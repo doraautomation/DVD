@@ -131,4 +131,4 @@ if __name__ == "__main__":
     data, ids, diags = load_and_preprocess_data(filepath)
     k = 5
     n_components = 17
-    parallel_kmeans(data, ids, diags, k, n_components=n_components, local_steps=5)
+    parallel_kmeans(data, ids, diags, k, n_components=n_components, local_steps=10)
