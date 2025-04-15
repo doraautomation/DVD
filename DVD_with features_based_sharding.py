@@ -1,8 +1,10 @@
 from mpi4py import MPI
+from mpi4py.futures import MPIPoolExecutor
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
 from concurrent.futures import ThreadPoolExecutor
 import time
 import hashlib
@@ -16,12 +18,13 @@ def load_and_preprocess_data(filepath):
     scaler = StandardScaler()
     return scaler.fit_transform(data)
 
-def evaluate_pca_quality(data, n_components=10, mse_threshold=0.01):
+def evaluate_pca_quality(data, n_components=17, mse_threshold=0.01):
     pca = PCA(n_components=n_components)
-    reduced = pca.fit_transform(data)
-    reconstructed = pca.inverse_transform(reduced)
-    mse = np.mean((data - reconstructed) ** 2)
-    return mse < mse_threshold, mse, reduced, pca, data
+    pca.fit(data)
+    reduced_data = pca.transform(data)
+    reconstructed_data = pca.inverse_transform(reduced_data)
+    mse = mean_squared_error(data, reconstructed_data)
+    return mse < mse_threshold, reduced_data, pca, data, mse
 
 def distribute_columns(data, comm):
     rank = comm.Get_rank()
@@ -40,7 +43,7 @@ def hash_data(data):
 def simulate_blockchain_node(data, hash_value):
     return hash_data(data) == hash_value
 
-def two_phase_commit(data, comm, sub_cluster_size=10):
+def two_phase_commit(data, comm, sub_cluster_size=20):
     hash_value = hash_data(data)
     with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
         results = list(executor.map(simulate_blockchain_node, [data] * sub_cluster_size, [hash_value] * sub_cluster_size))
@@ -51,48 +54,44 @@ def main():
     rank = comm.Get_rank()
     start_time = MPI.Wtime()
 
-    filepath = 'wdbc.csv'
+    filepath = 'wdbc.csv'  
     data = load_and_preprocess_data(filepath)
 
-    # Rank 0: PCA with MSE threshold check
+    # PCA and quality check
     if rank == 0:
-        passes_quality, mse, reduced_data, pca_model, original_data = evaluate_pca_quality(data)
+        passes_quality, reduced_data, pca_model, original_data, mse = evaluate_pca_quality(data)
         if not passes_quality:
-            print(f"[Rank 0] PCA MSE quality check failed. MSE = {mse:.6f}. Must be < 0.01.")
+            print(f"PCA quality check failed. MSE = {mse:.6f}. Must be < 0.01.")
             sys.exit(0)
-        else:
-            print(f"[Rank 0] PCA quality check passed: MSE = {mse:.6f}")
     else:
         reduced_data = None
 
     # Broadcast reduced data to all ranks
     reduced_data = comm.bcast(reduced_data if rank == 0 else None, root=0)
 
-    # Distribute features (columns) to each rank
+    # Distribute features
     local_data = distribute_columns(reduced_data, comm)
-    np.savetxt(f'reduced_data_rank_{rank}.csv', local_data, delimiter=",")
 
-    # === PUSH STAGE (block commit approval) ===
+    # === PUSH : Writing to shared ledger after commit approval ===
     push_start = MPI.Wtime()
     commit_success = two_phase_commit(local_data, comm)
     push_end = MPI.Wtime()
     push_time = push_end - push_start
 
     if commit_success:
-        print(f"Rank {rank}: Commit approved and data stored.")
+        # Store committed data
+        np.savetxt(f'committed_data_rank_{rank}.csv', local_data, delimiter=",")
     else:
-        print(f"Rank {rank}: Commit rejected due to insufficient consensus.")
+        print(f"Commit aborted.")
 
-    # === PULL STAGE (shared ledger sync) ===
+    # === PULL : Sync local ledgers from shared ledger ===
     pull_start = MPI.Wtime()
     updated_ledger_block = comm.bcast("Block_XYZ" if rank == 0 else None, root=0)
-    local_ledger = updated_ledger_block  # simulate local sync
+    local_ledger = updated_ledger_block  # simulate storing locally
     pull_end = MPI.Wtime()
     pull_time = pull_end - pull_start
-
-    print(f"Rank {rank}: Push Time = {push_time:.6f} sec | Pull Time = {pull_time:.6f} sec")
-
-    # Collect performance stats at rank 0
+    
+    # Gather timings 
     all_push_times = comm.gather(push_time, root=0)
     all_pull_times = comm.gather(pull_time, root=0)
 
