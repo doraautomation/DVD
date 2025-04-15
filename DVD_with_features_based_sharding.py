@@ -69,21 +69,22 @@ def main():
     # Broadcast reduced data to all ranks
     reduced_data = comm.bcast(reduced_data if rank == 0 else None, root=0)
 
-    # Distribute features
+    # Distribute columns 
     local_data = distribute_columns(reduced_data, comm)
 
-    # === PUSH : Writing to shared ledger after commit approval ===
+    # === PUSH : Storing to shared ledger after commit approval ===
     push_start = MPI.Wtime()
     commit_success = two_phase_commit(local_data, comm)
-    push_end = MPI.Wtime()
-    push_time = push_end - push_start
+    
 
     if commit_success:
         # Store committed data
         np.savetxt(f'committed_data_rank_{rank}.csv', local_data, delimiter=",")
     else:
         print(f"Commit aborted.")
-
+    push_end = MPI.Wtime()
+    push_time = push_end - push_start
+    
     # === PULL : Sync local ledgers from shared ledger ===
     pull_start = MPI.Wtime()
     updated_ledger_block = comm.bcast("Block_XYZ" if rank == 0 else None, root=0)
