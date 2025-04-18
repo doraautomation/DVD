@@ -7,10 +7,7 @@ Distributed Vector Data Management system with High-Performance Distributed Ledg
 - Clustering with Parallel K-Means
 - Feature-based sharding — splitting the dataset across nodes by feature columns
 - Blockchain-style validation using a two-phase commit simulated with python code
-
-The system uses **MPI** to distribute tasks across processes, and **Python threads** to simulate internal node consensus (like in a sub-cluster or committee).
-
----
+- The system uses MPI to distribute tasks across processes, and simulate internal node consensus (like in a sub-cluster or committee).
 
 ## What's Included
 
