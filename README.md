@@ -1,11 +1,12 @@
-# DVD: Enabling Distributed Vector Data Management with High-Performance Distributed Ledgers for Scientific Computing
+# DVD
+Distributed Vector Data Management system with High-Performance Distributed Ledgers for Scientific Computing.
 
-This project demonstrates a lightweight distributed system that combines:
+# Features:
 
-- **Feature reduction** using Principal Component Analysis (PCA)
-- **Clustering** with KMeans
-- **Feature-based sharding** — splitting the dataset across nodes by feature columns
-- **Blockchain-style validation** using a two-phase commit simulated with Python threads
+- Feature reduction using Principal Component Analysis (PCA)
+- Clustering with Parallel K-Means
+- Feature-based sharding — splitting the dataset across nodes by feature columns
+- Blockchain-style validation using a two-phase commit simulated with python code
 
 The system uses **MPI** to distribute tasks across processes, and **Python threads** to simulate internal node consensus (like in a sub-cluster or committee).
 
