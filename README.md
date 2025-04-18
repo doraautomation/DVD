@@ -17,7 +17,7 @@ DVD is integrated with MPI
 Then install **[mpi4py](https://github.com/mpi4py/mpi4py/)**
 
 To clone the code to your target directory
-
+```bash
 git clone https://github.com/doraautomation/DVD
 cd DVD
 
