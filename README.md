@@ -17,12 +17,12 @@ DVD is integrated with MPI
 Then install **[mpi4py](https://github.com/mpi4py/mpi4py/)**
 
 To clone the code to your target directory
-```bash
+
 git clone https://github.com/doraautomation/DVD
 cd DVD
 
 Install all required package.
-```bash
+
 pip install -r requirements.txt
 
 Run the Project Locally
@@ -30,7 +30,6 @@ Run the Project Locally
 After installing the dependencies, you can run the project using `mpiexec`.
 Here’s an example with 4 processes:
 
-```bash
 mpiexec -n 4 python DVD_with_features_based_sharding.py **or** DVD_with_k_means_clustering.py
 
 Run on HPC with SLURM
@@ -39,5 +38,4 @@ If you're working in an HPC environment, you can use the provided SLURM script t
 
 Submit the Job
 
-```bash
 sbatch run_job.slurm
