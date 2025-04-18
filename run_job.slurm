@@ -25,4 +25,4 @@ process_num=5
 
 # Run your MPI Python program
 mpiexec -host node001,node002,node003,node004,node005 -n $process_num python DVD_with_features_based_sharding.py
-mpiexec -host node001,node002,node003,node004,node005 -n $process_num python DVD_with_k-means_clustering.py
+#mpiexec -host node001,node002,node003,node004,node005 -n $process_num python DVD_with_k-means_clustering.py
