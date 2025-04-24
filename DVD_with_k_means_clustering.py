@@ -103,6 +103,13 @@ def load_and_preprocess_data(filepath):
     data_scaled = scaler.fit_transform(data_features)
     return data_scaled, id_col, diag_col
 
+def evaluate_pca_quality(data, n_components=17, mse_threshold=0.01):
+    pca = PCA(n_components=n_components)
+    reduced_data = pca.fit_transform(data)
+    reconstructed = pca.inverse_transform(reduced_data)
+    mse = mean_squared_error(data, reconstructed)
+    return mse < mse_threshold, reduced_data, mse
+
 def initialize_centroids(data, k):
     indices = np.random.choice(data.shape[0], size=k, replace=False)
     return data[indices, :]
@@ -136,16 +143,14 @@ def parallel_kmeans_with_blockchain(filepath, k=5, n_components=17, num_steps=10
     data, id_col, diag_col = load_and_preprocess_data(filepath)
 
     if rank == 0:
-        pca = PCA(n_components=n_components)
-        reduced = pca.fit_transform(data)
-        reconstructed = pca.inverse_transform(reduced)
-        mse = np.mean((data - reconstructed)**2)
-        if mse >= mse_threshold:
-            print(f"MSE too high: {mse:.6f}")
-            sys.exit(0)
-        data = reduced
+        passed, reduced_data, mse = evaluate_pca_quality(data)
+        if not passed:
+            print(f"PCA MSE too high: {mse:.6f}")
+            sys.exit()
+    else:
+        reduced_data = None
 
-    data = comm.bcast(data if rank == 0 else None, root=0)
+    data = comm.bcast(reduced_data if rank == 0 else None, root=0)
     id_col = comm.bcast(id_col, root=0)
     diag_col = comm.bcast(diag_col, root=0)
 
