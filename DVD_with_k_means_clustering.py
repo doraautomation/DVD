@@ -65,7 +65,7 @@ class Blockchain:
         with open('output/Blockchain.txt', 'w') as f:
             f.write(output_text)
 
-    def consensus(self, block, sub_cluster_size=2):
+    def consensus(self, block, sub_cluster_size=20):
         # Phase 1: Prepare
         prepare_votes = [data_validation(block) for _ in range(sub_cluster_size)]
         if sum(prepare_votes) >= (sub_cluster_size * 0.51):
