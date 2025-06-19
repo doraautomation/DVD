@@ -80,6 +80,15 @@ class Blockchain:
         if len(signatures) >= int(sub_cluster_size * 0.67):
             agg_sig = AugSchemeMPL.aggregate(signatures)
             if AugSchemeMPL.aggregate_verify(pubkeys, [block_hash] * len(pubkeys), agg_sig):
+                for i in range(sub_cluster_size):
+                   block_df = pd.DataFrame([{
+                   'index': block.index,
+                   'timestamp': block.timestamp,
+                   'data': block.data,
+                   'previous_hash': block.previous_hash,
+                   'hash': block.hash
+                   }])
+                   block_df.to_csv(f'output/subcluster_node_{i}_coordinator_{rank}.csv', index=False)
                 self.add_block(block)
                 return True
 
