@@ -32,15 +32,17 @@ class Preprocessor:
         return mse < self.mse_threshold, reduced, mse
 
 class Block:
-    def __init__(self, index, timestamp, data, previous_hash):
+    def __init__(self, index, timestamp, data, previous_hash, bls_signature=None):
         self.index = index
         self.timestamp = timestamp
         self.data = data
         self.previous_hash = previous_hash
+        self.bls_signature = bls_signature  # Store aggregated BLS signature
         self.hash = self.calculate_hash()
 
     def calculate_hash(self):
         return hashlib.sha256((str(self.index) + str(self.timestamp) + str(self.data) + str(self.previous_hash)).encode()).hexdigest()
+
 
 class Blockchain:
     def __init__(self):
@@ -80,18 +82,25 @@ class Blockchain:
         if len(signatures) >= int(sub_cluster_size * 0.67):
             agg_sig = AugSchemeMPL.aggregate(signatures)
             if AugSchemeMPL.aggregate_verify(pubkeys, [block_hash] * len(pubkeys), agg_sig):
+                # Store aggregated BLS signature
+                block.bls_signature = bytes(agg_sig).hex()
+
+                # Save to all subcluster node files
                 for i in range(sub_cluster_size):
-                   block_df = pd.DataFrame([{
-                   'index': block.index,
-                   'timestamp': block.timestamp,
-                   'data': block.data,
-                   'previous_hash': block.previous_hash,
-                   'hash': block.hash
-                   }])
-                   block_df.to_csv(f'output/subcluster_node_{i}_coordinator_{rank}.csv', index=False)
+                    block_df = pd.DataFrame([{
+                        'index': block.index,
+                        'timestamp': block.timestamp,
+                        'data': block.data,
+                        'previous_hash': block.previous_hash,
+                        'hash': block.hash,
+                        'bls_signature': block.bls_signature
+                    }])
+                    block_df.to_csv(f'output/subcluster_node_{i}_coordinator_{rank}.csv', index=False)
+
                 self.add_block(block)
                 return True
 
+        # Fallback to 2PQC
         prepare_results = [False] * sub_cluster_size
 
         def prepare_phase(i):
@@ -108,7 +117,8 @@ class Blockchain:
                     'timestamp': block.timestamp,
                     'data': block.data,
                     'previous_hash': block.previous_hash,
-                    'hash': block.hash
+                    'hash': block.hash,
+                    'bls_signature': block.bls_signature  # might be None
                 }])
                 block_df.to_csv(f'output/subcluster_node_{i}_coordinator_{rank}.csv', index=False)
 
@@ -131,10 +141,17 @@ def data_validation(block):
     except:
         return False
 
-def write_blockchain_to_file(blockchain, filename):
+def get_chain(blockchain, filename):
     output = []
     for block in blockchain.chain:
-        output.append(f"Block #{block.index}\nTimestamp: {block.timestamp}\nData: {block.data}\nHash: {block.hash}\nPrevHash: {block.previous_hash}\n")
+        output.append(
+            f"Block #{block.index}\n"
+            f"Timestamp: {block.timestamp}\n"
+            f"Data: {block.data}\n"
+            f"Hash: {block.hash}\n"
+            f"PrevHash: {block.previous_hash}\n"
+            f"BLS Signature: {block.bls_signature}\n"
+        )
     with open(filename, "w") as f:
         f.write("\n".join(output))
 
@@ -229,7 +246,7 @@ class KMeansRunner:
             for b in all_blocks:
                 if b and b.hash not in [blk.hash for blk in blockchain.chain]:
                     blockchain.add_block(b)
-            write_blockchain_to_file(blockchain, "output/kmeans_blockchain.txt")
+            get_chain(blockchain, "output/kmeans_blockchain.txt")
             print(f"[KMEANS MODE] Execution Time: {end - start:.4f} sec")
 
 class ColumnShardRunner:
@@ -271,7 +288,7 @@ class ColumnShardRunner:
             for b in all_blocks:
                 if b and b.hash not in [blk.hash for blk in blockchain.chain]:
                     blockchain.add_block(b)
-            write_blockchain_to_file(blockchain, "output/column_blockchain.txt")
+            get_chain(blockchain, "output/column_blockchain.txt")
             print(f"[COLUMN SHARD MODE] Execution Time: {end - start:.4f} sec")
 
 if __name__ == "__main__":
