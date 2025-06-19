@@ -85,7 +85,6 @@ class Blockchain:
                 # Store aggregated BLS signature
                 block.bls_signature = bytes(agg_sig).hex()
 
-                # Save to all subcluster node files
                 for i in range(sub_cluster_size):
                     block_df = pd.DataFrame([{
                         'index': block.index,
@@ -100,7 +99,7 @@ class Blockchain:
                 self.add_block(block)
                 return True
 
-        # Fallback to 2PQC
+        # 2PQC
         prepare_results = [False] * sub_cluster_size
 
         def prepare_phase(i):
