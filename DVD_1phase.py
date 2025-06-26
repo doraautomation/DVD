@@ -56,6 +56,7 @@ class Blockchain:
         new_block.hash = new_block.calculate_hash()
         self.chain.append(new_block)
 
+    ############################################## Consensus Protocol #############################################################
     def consensus(self, block, rank, sub_cluster_size=20):
         votes = [False] * sub_cluster_size
         temp_commit_data = [None] * sub_cluster_size
@@ -129,7 +130,7 @@ class Blockchain:
             self.add_block(block)
             return True
         return False
-
+########################################################################################################################
 def hash_data(data):
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
