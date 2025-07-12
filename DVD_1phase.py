@@ -2,17 +2,16 @@ import hashlib
 import datetime as date
 import json
 import pandas as pd
-import threading
 import numpy as np
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
-from concurrent.futures import ThreadPoolExecutor
 from mpi4py import MPI
 import os
 import time
 import sys
-
 
 os.makedirs('output', exist_ok=True)
 
@@ -32,6 +31,28 @@ class Preprocessor:
         reduced = pca.fit_transform(data)
         mse = mean_squared_error(data, pca.inverse_transform(reduced))
         return mse < self.mse_threshold, reduced, mse
+
+class Network:
+    def __init__(self, num_nodes_per_cluster=20, total_clusters=1):
+        self.num_nodes_per_cluster = num_nodes_per_cluster
+        self.total_clusters = total_clusters
+        self.clusters = self._create_clusters()
+
+    def _create_clusters(self):
+        clusters = {}
+        node_id = 0
+        for cluster_id in range(self.total_clusters):
+            clusters[cluster_id] = []
+            for _ in range(self.num_nodes_per_cluster):
+                clusters[cluster_id].append(node_id)
+                node_id += 1
+        return clusters
+
+    def get_nodes_for_cluster(self, cluster_id):
+        return self.clusters.get(cluster_id, [])
+
+    def display(self):
+        pass
 
 class Block:
     def __init__(self, index, timestamp, data, previous_hash):
@@ -61,92 +82,89 @@ class Blockchain:
 
     def is_valid(self):
         for i in range(1, len(self.chain)):
-            current_block = self.chain[i]
-            previous_block = self.chain[i - 1]
-            if current_block.hash != current_block.calculate_hash():
+            if self.chain[i].hash != self.chain[i].calculate_hash():
                 return False
-            if current_block.previous_hash != previous_block.hash:
+            if self.chain[i].previous_hash != self.chain[i - 1].hash:
                 return False
         return True
 
     def get_chain(self):
-        chain_output = []
-        for block in self.chain:
-            chain_output.append("Block #{}".format(block.index))
-            chain_output.append("Timestamp: {}".format(block.timestamp))
-            chain_output.append("Hash: {}".format(block.hash))
-            chain_output.append("Previous Hash: {}".format(block.previous_hash))
-            chain_output.append("Data: {}".format(block.data))
-            chain_output.append("")
-        output_text = "\n".join(chain_output)
-        os.makedirs("output", exist_ok=True)
         with open('output/Blockchain.txt', 'w') as f:
-            f.write(output_text)
+            for block in self.chain:
+                f.write(f"Block #{block.index}\nTimestamp: {block.timestamp}\nHash: {block.hash}\nPrevious Hash: {block.previous_hash}\nData: {block.data}\n\n")
 
-    def consensus(self, block, rank, sub_cluster_size=30):
-        votes = [False] * sub_cluster_size
+    def consensus(self, block, rank, sub_cluster_size=20):
+        parsed_data = json.loads(block.data)
+        data_hash = hash_data(parsed_data['data'])
+        blk_hash = parsed_data['hash']
+
+        votes = np.zeros(sub_cluster_size, dtype=bool)
         temp_commit_data = [None] * sub_cluster_size
         commit_event = threading.Event()
-
+    # ------------------ Push Phase ------------------
+        push_start = time.time()
+        
         def send_prepare(i):
-            if data_validation(block):
-                blk_data = json.loads(block.data)
-                blk_data['meta'] = {
+            if data_hash == blk_hash:
+                temp = parsed_data.copy()
+                temp['meta'] = {
                     'validator_node': i,
                     'coordinator_rank': rank,
                     'prepare_time': str(date.datetime.now()),
                     'status': 'PREPARED'
                 }
-                temp_commit_data[i] = blk_data
+                temp_commit_data[i] = temp
                 votes[i] = True
-                return True
-            return False
 
         with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
-            prepare_votes = list(executor.map(send_prepare, range(sub_cluster_size)))
+            executor.map(send_prepare, range(sub_cluster_size))
 
-        if sum(prepare_votes) >= int(sub_cluster_size * 0.51):
-            print(f"[Rank {rank}] Quorum met. Coordinator preparing COMMIT.")
-            coordinator_block = json.loads(block.data)
+        committed = False
+        if votes.sum() >= int(sub_cluster_size * 0.51):
+            coordinator_block = parsed_data.copy()
             coordinator_block['meta'] = {
                 'coordinator_rank': rank,
                 'commit_time': str(date.datetime.now()),
                 'status': 'COORDINATOR_COMMITTED'
             }
-            df = pd.DataFrame([coordinator_block])
-            df.to_csv(f'output/coordinator_commit_rank_{rank}.csv', index=False)
+            pd.DataFrame([coordinator_block]).to_csv(f'output/coordinator_commit_rank_{rank}.csv', index=False)
             commit_event.set()
-        else:
-            print(f"[Rank {rank}] Quorum not met. Coordinator aborts.")
+            committed = True
+        
+        push_end = time.time()
+        push_duration = push_end - push_start
 
+    # ------------------ Pull Phase ------------------
+        pull_start = time.time()
+        
         def receive_commit(i):
             if votes[i]:
-                if not commit_event.wait(timeout=3):
-                    print(f"[Rank {rank}] Node {i} timeout waiting for commit.")
-                    return
+                commit_event.wait(timeout=3)
                 temp_commit_data[i]['meta']['commit_time'] = str(date.datetime.now())
                 temp_commit_data[i]['meta']['status'] = 'COMMITTED'
-                df = pd.DataFrame([temp_commit_data[i]])
-                df.to_csv(f'output/subcluster_node_{i}_coordinator_{rank}.csv', index=False)
             else:
                 if commit_event.wait(timeout=3):
-                    committed_data = json.loads(block.data)
-                    committed_data['meta'] = {
+                    fallback = parsed_data.copy()
+                    fallback['meta'] = {
                         'coordinator_rank': rank,
+                        'node_id': i,
                         'commit_time': str(date.datetime.now()),
                         'status': 'COMMIT_READ_FROM_LEDGER'
                     }
-                    df = pd.DataFrame([committed_data])
-                    df.to_csv(f'output/subcluster_node_{i}_coordinator_{rank}_recovered.csv', index=False)
+                    temp_commit_data[i] = fallback
 
         with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
             executor.map(receive_commit, range(sub_cluster_size))
+        
+        pull_end = time.time()
+        pull_duration = pull_end - pull_start   
+        
+        pd.DataFrame(temp_commit_data).to_csv(f'output/subcluster_all_nodes_coordinator_{rank}.csv', index=False)
 
-        if commit_event.is_set():
+        if committed:
             self.add_block(block)
-            return True
-        return False
-
+        
+        return committed, push_duration, pull_duration
 
 def hash_data(data):
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
@@ -182,7 +200,6 @@ class KMeansProcessor:
     def run(self, local_data, comm, global_data=None):
         rank = comm.Get_rank()
         size = comm.Get_size()
-
         centroids = self.initialize_centroids(global_data) if rank == 0 else None
         centroids = comm.bcast(centroids, root=0)
 
@@ -220,13 +237,13 @@ class KMeansRunner:
         pre = Preprocessor(self.filepath)
         data = pre.load_and_scale()
         if rank == 0:
-          passed, reduced, mse = pre.apply_pca_and_check(data)
-          if not passed:
-             print(f"PCA MSE too high: {mse:.6f}")
-             sys.exit()
+            passed, reduced, mse = pre.apply_pca_and_check(data)
+            if not passed:
+                print(f"PCA MSE too high: {mse:.6f}")
+                sys.exit()
         else:
-          reduced = None
-          
+            reduced = None
+
         reduced = comm.bcast(reduced, root=0)
         local_data = ColumnShardProcessor.distribute_columns(reduced, comm)
         local_data = np.array_split(reduced, comm.Get_size())[rank]
@@ -240,24 +257,26 @@ class KMeansRunner:
             'hash': hash_data(clustered_data.tolist())
         }
         blk = Block(rank + 1, date.datetime.now(), json.dumps(blk_data), "0")
-        committed = blockchain.consensus(blk, rank)
-
-        if committed:
-            pd.DataFrame([{
-                'index': blk.index,
-                'timestamp': blk.timestamp,
-                'data': blk.data,
-                'previous_hash': blk.previous_hash,
-                'hash': blk.hash
-            }]).to_csv(f'output/kmeans_block_rank_{rank}.csv', index=False)
-
+        committed, push_duration, pull_duration = blockchain.consensus(blk, rank)
+        
         end = MPI.Wtime()
+        
+        push_times = comm.gather(push_duration, root=0)
+        pull_times = comm.gather(pull_duration, root=0)
+        
         all_blocks = comm.gather(blk if committed else None, root=0)
+        
         if rank == 0:
             for b in all_blocks:
                 if b and b.hash not in [blk.hash for blk in blockchain.chain]:
                     blockchain.add_block(b)
-            print(f"[KMEANS MODE] Execution Time: {end - start:.4f} sec")
+            total_vectors = reduced.shape[0]        
+            avg_push = sum(push_times) / len(push_times)
+            avg_pull = sum(pull_times) / len(pull_times)
+            
+            print(f"[Average] Push phase: {avg_push:.6f} sec, Pull phase: {avg_pull:.6f} sec")
+            print(f"[K-means mode] Execution Time: {end - start:.4f} sec")
+            print(f"[K-means mode] Throughput: {total_vectors / (end - start):.2f} vectors/sec")
             blockchain.get_chain()
             print("Blockchain is valid." if blockchain.is_valid() else "Blockchain is invalid!")
 
@@ -273,13 +292,13 @@ class ColumnShardRunner:
         pre = Preprocessor(self.filepath)
         data = pre.load_and_scale()
         if rank == 0:
-          passed, reduced, mse = pre.apply_pca_and_check(data)
-          if not passed:
-             print(f"PCA MSE too high: {mse:.6f}")
-             sys.exit()
+            passed, reduced, mse = pre.apply_pca_and_check(data)
+            if not passed:
+                print(f"PCA MSE too high: {mse:.6f}")
+                sys.exit()
         else:
-          reduced = None
-          
+            reduced = None
+
         reduced = comm.bcast(reduced, root=0)
         local_data = ColumnShardProcessor.distribute_columns(reduced, comm)
 
@@ -290,28 +309,29 @@ class ColumnShardRunner:
             'hash': hash_data(local_data.tolist())
         }
         blk = Block(rank + 1001, date.datetime.now(), json.dumps(blk_data), "0")
-        committed = blockchain.consensus(blk, rank)
-
-        if committed:
-            pd.DataFrame([{
-                'index': blk.index,
-                'timestamp': blk.timestamp,
-                'data': blk.data,
-                'previous_hash': blk.previous_hash,
-                'hash': blk.hash
-            }]).to_csv(f'output/column_block_rank_{rank}.csv', index=False)
-
+        committed, push_duration, pull_duration = blockchain.consensus(blk, rank)
+        
         end = MPI.Wtime()
+        
+        push_times = comm.gather(push_duration, root=0)
+        pull_times = comm.gather(pull_duration, root=0)
+        
         all_blocks = comm.gather(blk if committed else None, root=0)
         if rank == 0:
             for b in all_blocks:
                 if b and b.hash not in [blk.hash for blk in blockchain.chain]:
                     blockchain.add_block(b)
-            print(f"[Column shade mode] Execution Time: {end - start:.4f} sec")
+            total_vectors = reduced.shape[0]
+            avg_push = sum(push_times) / len(push_times)
+            avg_pull = sum(pull_times) / len(pull_times)
+            
+            print(f"[Average] Push phase: {avg_push:.6f} sec, Pull phase: {avg_pull:.6f} sec")
+            print(f"[Column mode] Execution Time: {end - start:.4f} sec")
+            print(f"Column mode] Throughput: {total_vectors / (end - start):.2f} vectors/sec")
             blockchain.get_chain()
             print("Blockchain is valid." if blockchain.is_valid() else "Blockchain is invalid!")
-            
+
 if __name__ == "__main__":
-    filepath = 'data.csv'
+    filepath = 'data1.csv'
     KMeansRunner(filepath).execute()
-    #ColumnShardRunner(filepath).execute()
+    ColumnShardRunner(filepath).execute()
