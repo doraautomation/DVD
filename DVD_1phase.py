@@ -12,6 +12,8 @@ from mpi4py import MPI
 import os
 import time
 import sys
+import random
+import math
 
 os.makedirs('output', exist_ok=True)
 
@@ -33,7 +35,7 @@ class Preprocessor:
         return mse < self.mse_threshold, reduced, mse
 
 class Network:
-    def __init__(self, num_nodes_per_cluster=20, total_clusters=1):
+    def __init__(self, num_nodes_per_cluster=5, total_clusters=1):
         self.num_nodes_per_cluster = num_nodes_per_cluster
         self.total_clusters = total_clusters
         self.clusters = self._create_clusters()
@@ -93,7 +95,28 @@ class Blockchain:
             for block in self.chain:
                 f.write(f"Block #{block.index}\nTimestamp: {block.timestamp}\nHash: {block.hash}\nPrevious Hash: {block.previous_hash}\nData: {block.data}\n\n")
 
-    def consensus(self, block, rank, sub_cluster_size=20):
+    def simulate_faulty_nodes(self, sub_cluster_size, fault_percentage):
+        # Calculate the number of faulty nodes based on the fault percentage
+        num_faulty_nodes = int(sub_cluster_size * fault_percentage)  
+        faulty_nodes = set(random.sample(range(sub_cluster_size), num_faulty_nodes))
+        
+        print(f"Fault percentage: {fault_percentage * 100:.2f}%")
+        print(f"Number of faulty nodes: {num_faulty_nodes} out of {sub_cluster_size}")
+        return faulty_nodes
+
+    def consensus_success_rate(self, n, f, t):
+        h = n - f
+        failure_probability = 0
+        if f >= t:
+            return 0.0  
+        
+        for x in range(t, f + 1):
+                failure_probability += math.comb(f, x) * (0.5 ** x) * (0.5 ** (f - x))
+        
+        success_rate = 1 - failure_probability
+        return success_rate
+
+    def consensus(self, block, rank, fault_percentage, sub_cluster_size=10):
         parsed_data = json.loads(block.data)
         data_hash = hash_data(parsed_data['data'])
         blk_hash = parsed_data['hash']
@@ -101,20 +124,28 @@ class Blockchain:
         votes = np.zeros(sub_cluster_size, dtype=bool)
         temp_commit_data = [None] * sub_cluster_size
         commit_event = threading.Event()
-    # ------------------ Push Phase ------------------
+
+        # Simulate faulty nodes, all ranks will have the same faulty nodes
+        faulty_nodes = self.simulate_faulty_nodes(sub_cluster_size, fault_percentage)
+
+        # ------------------ Push Phase ------------------
         push_start = time.time()
         
         def send_prepare(i):
-            if data_hash == blk_hash:
-                temp = parsed_data.copy()
-                temp['meta'] = {
-                    'validator_node': i,
-                    'coordinator_rank': rank,
-                    'prepare_time': str(date.datetime.now()),
-                    'status': 'PREPARED'
-                }
-                temp_commit_data[i] = temp
-                votes[i] = True
+            if i in faulty_nodes:
+                print(f"Node {i} is faulty and provides a wrong vote.")
+                votes[i] = False
+            else:
+                if data_hash == blk_hash:
+                    temp = parsed_data.copy()
+                    temp['meta'] = {
+                        'validator_node': i,
+                        'coordinator_rank': rank,
+                        'prepare_time': str(date.datetime.now()),
+                        'status': 'PREPARED'
+                    }
+                    temp_commit_data[i] = temp
+                    votes[i] = True
 
         with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
             executor.map(send_prepare, range(sub_cluster_size))
@@ -134,7 +165,7 @@ class Blockchain:
         push_end = time.time()
         push_duration = push_end - push_start
 
-    # ------------------ Pull Phase ------------------
+        # ------------------ Pull Phase ------------------
         pull_start = time.time()
         
         def receive_commit(i):
@@ -158,13 +189,18 @@ class Blockchain:
         
         pull_end = time.time()
         pull_duration = pull_end - pull_start   
-        
+
         pd.DataFrame(temp_commit_data).to_csv(f'output/subcluster_all_nodes_coordinator_{rank}.csv', index=False)
 
         if committed:
             self.add_block(block)
-        
+
+        # Calculate consensus success rate
+        consensus_rate = self.consensus_success_rate(sub_cluster_size, len(faulty_nodes), int(sub_cluster_size * 0.51))
+        print(f"Consensus Success Rate: {consensus_rate * 100:.2f}%")
+
         return committed, push_duration, pull_duration
+
 
 def hash_data(data):
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
@@ -233,9 +269,11 @@ class KMeansRunner:
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         start = MPI.Wtime()
-
+        
         pre = Preprocessor(self.filepath)
         data = pre.load_and_scale()
+        fault_percentage = random.random() * 0.49
+        
         if rank == 0:
             passed, reduced, mse = pre.apply_pca_and_check(data)
             if not passed:
@@ -244,6 +282,7 @@ class KMeansRunner:
         else:
             reduced = None
 
+        fault_percentage = comm.bcast(fault_percentage, root=0)
         reduced = comm.bcast(reduced, root=0)
         local_data = ColumnShardProcessor.distribute_columns(reduced, comm)
         local_data = np.array_split(reduced, comm.Get_size())[rank]
@@ -257,7 +296,7 @@ class KMeansRunner:
             'hash': hash_data(clustered_data.tolist())
         }
         blk = Block(rank + 1, date.datetime.now(), json.dumps(blk_data), "0")
-        committed, push_duration, pull_duration = blockchain.consensus(blk, rank)
+        committed, push_duration, pull_duration = blockchain.consensus(blk, rank, fault_percentage)
         
         end = MPI.Wtime()
         
@@ -291,6 +330,8 @@ class ColumnShardRunner:
 
         pre = Preprocessor(self.filepath)
         data = pre.load_and_scale()
+        fault_percentage = random.random() * 0.49
+        
         if rank == 0:
             passed, reduced, mse = pre.apply_pca_and_check(data)
             if not passed:
@@ -298,7 +339,7 @@ class ColumnShardRunner:
                 sys.exit()
         else:
             reduced = None
-
+        fault_percentage = comm.bcast(fault_percentage, root=0)
         reduced = comm.bcast(reduced, root=0)
         local_data = ColumnShardProcessor.distribute_columns(reduced, comm)
 
@@ -309,7 +350,7 @@ class ColumnShardRunner:
             'hash': hash_data(local_data.tolist())
         }
         blk = Block(rank + 1001, date.datetime.now(), json.dumps(blk_data), "0")
-        committed, push_duration, pull_duration = blockchain.consensus(blk, rank)
+        committed, push_duration, pull_duration = blockchain.consensus(blk, rank, fault_percentage)
         
         end = MPI.Wtime()
         
@@ -334,4 +375,4 @@ class ColumnShardRunner:
 if __name__ == "__main__":
     filepath = 'data1.csv'
     KMeansRunner(filepath).execute()
-    ColumnShardRunner(filepath).execute()
+    #ColumnShardRunner(filepath).execute()
