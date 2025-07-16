@@ -110,10 +110,8 @@ class Blockchain:
         if f >= t:
             return 0.0  
         
-        for x in range(t, f + 1):
-                failure_probability += math.comb(f, x) * (0.5 ** x) * (0.5 ** (f - x))
+        success_rate = 1.0  if h >= t else 0.0
         
-        success_rate = 1 - failure_probability
         return success_rate
 
     def consensus(self, block, rank, fault_percentage, sub_cluster_size=10):
