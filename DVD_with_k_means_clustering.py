@@ -3,17 +3,59 @@ import datetime as date
 import json
 import pandas as pd
 import numpy as np
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
-from concurrent.futures import ThreadPoolExecutor
 from mpi4py import MPI
+import os
+import time
 import sys
-import os 
+import random
+import math
 
-os.makedirs('output', exist_ok=True) #output_directory
+os.makedirs('output', exist_ok=True)
 
-# Block structure
+class Preprocessor:
+    def __init__(self, filepath, n_components=180, mse_threshold=0.01):
+        self.filepath = filepath
+        self.n_components = n_components
+        self.mse_threshold = mse_threshold
+
+    def load_and_scale(self):
+        df = pd.read_csv(self.filepath)
+        features = df.drop(['Activity'], axis=1, errors='ignore')
+        return StandardScaler().fit_transform(features)
+
+    def apply_pca_and_check(self, data):
+        pca = PCA(n_components=self.n_components)
+        reduced = pca.fit_transform(data)
+        mse = mean_squared_error(data, pca.inverse_transform(reduced))
+        return mse < self.mse_threshold, reduced, mse
+
+class Network:
+    def __init__(self, num_nodes_per_cluster=5, total_clusters=1):
+        self.num_nodes_per_cluster = num_nodes_per_cluster
+        self.total_clusters = total_clusters
+        self.clusters = self._create_clusters()
+
+    def _create_clusters(self):
+        clusters = {}
+        node_id = 0
+        for cluster_id in range(self.total_clusters):
+            clusters[cluster_id] = []
+            for _ in range(self.num_nodes_per_cluster):
+                clusters[cluster_id].append(node_id)
+                node_id += 1
+        return clusters
+
+    def get_nodes_for_cluster(self, cluster_id):
+        return self.clusters.get(cluster_id, [])
+
+    def display(self):
+        pass
+
 class Block:
     def __init__(self, index, timestamp, data, previous_hash):
         self.index = index
@@ -23,10 +65,8 @@ class Block:
         self.hash = self.calculate_hash()
 
     def calculate_hash(self):
-        hash_string = str(self.index) + str(self.timestamp) + str(self.data) + str(self.previous_hash)
-        return hashlib.sha256(hash_string.encode()).hexdigest()
+        return hashlib.sha256((str(self.index) + str(self.timestamp) + str(self.data) + str(self.previous_hash)).encode()).hexdigest()
 
-# Blockchain structure
 class Blockchain:
     def __init__(self):
         self.chain = [self.create_genesis_block()]
@@ -44,169 +84,295 @@ class Blockchain:
 
     def is_valid(self):
         for i in range(1, len(self.chain)):
-            current_block = self.chain[i]
-            previous_block = self.chain[i - 1]
-            if current_block.hash != current_block.calculate_hash():
+            if self.chain[i].hash != self.chain[i].calculate_hash():
                 return False
-            if current_block.previous_hash != previous_block.hash:
+            if self.chain[i].previous_hash != self.chain[i - 1].hash:
                 return False
         return True
 
     def get_chain(self):
-        chain_output = []
-        for block in self.chain:
-            chain_output.append("Block #{}".format(block.index))
-            chain_output.append("Timestamp: {}".format(block.timestamp))
-            chain_output.append("Data: {}".format(block.data))
-            chain_output.append("Hash: {}".format(block.hash))
-            chain_output.append("Previous Hash: {}".format(block.previous_hash))
-            chain_output.append("")
-        output_text = "\n".join(chain_output)
         with open('output/Blockchain.txt', 'w') as f:
-            f.write(output_text)
+            for block in self.chain:
+                f.write(f"Block #{block.index}\nTimestamp: {block.timestamp}\nHash: {block.hash}\nPrevious Hash: {block.previous_hash}\nData: {block.data}\n\n")
 
-    def consensus(self, block, sub_cluster_size=20):
-        # Phase 1: Prepare
-        prepare_votes = [data_validation(block) for _ in range(sub_cluster_size)]
-        if sum(prepare_votes) >= (sub_cluster_size * 0.51):
-        # Phase 2: Commit 
-            commit_memory = [None] * sub_cluster_size
-            
-            def commit_phase(i):
-                    commit_memory[i] = block 
-                    
-                    block_df = pd.DataFrame([{
-                        'index': block.index,
-                        'timestamp': block.timestamp,
-                        'data': block.data,
-                        'previous_hash': block.previous_hash,
-                        'hash': block.hash
-                    }])
-                    block_df.to_csv(f'output/subcluster_node_{i}_coordinator_{MPI.COMM_WORLD.Get_rank()}.csv', index=False)
-                    return True
+    def simulate_faulty_nodes(self, sub_cluster_size, fault_percentage):
+        # Calculate the number of faulty nodes based on the fault percentage
+        num_faulty_nodes = int(sub_cluster_size * fault_percentage)  
+        faulty_nodes = set(random.sample(range(sub_cluster_size), num_faulty_nodes))
+        
+        print(f"Fault percentage: {fault_percentage * 100:.2f}%")
+        print(f"Number of faulty nodes: {num_faulty_nodes} out of {sub_cluster_size}")
+        return faulty_nodes
 
-            with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
-                commit_votes = list(executor.map(commit_phase, range(sub_cluster_size)))
-                
-            if sum(commit_votes) >= (sub_cluster_size * 0.51):
-                self.add_block(block)
-                return True
-        return False
+    def consensus_success_rate(self, n, f, t):
+        h = n - f
+        failure_probability = 0
+        if f >= t:
+            return 0.0  
+        
+        for x in range(t, f + 1):
+                failure_probability += math.comb(f, x) * (0.5 ** x) * (0.5 ** (f - x))
+        
+        success_rate = 1 - failure_probability
+        return success_rate
 
-# Parallel KMeans Sharding
-def load_and_preprocess_data(filepath):
-    data = pd.read_csv(filepath)
-    id_col = data['ID'].values
-    diag_col = data['Diagnosis'].values
-    data_features = data.drop(['ID', 'Diagnosis'], axis=1)
-    scaler = StandardScaler()
-    data_scaled = scaler.fit_transform(data_features)
-    return data_scaled, id_col, diag_col
+    def consensus(self, block, rank, fault_percentage, sub_cluster_size=10):
+        parsed_data = json.loads(block.data)
+        data_hash = hash_data(parsed_data['data'])
+        blk_hash = parsed_data['hash']
 
-def evaluate_pca_quality(data, n_components=17, mse_threshold=0.01):
-    pca = PCA(n_components=n_components)
-    reduced_data = pca.fit_transform(data)
-    reconstructed = pca.inverse_transform(reduced_data)
-    mse = mean_squared_error(data, reconstructed)
-    return mse < mse_threshold, reduced_data, mse
+        votes = np.zeros(sub_cluster_size, dtype=bool)
+        temp_commit_data = [None] * sub_cluster_size
+        commit_event = threading.Event()
 
-def initialize_centroids(data, k):
-    indices = np.random.choice(data.shape[0], size=k, replace=False)
-    return data[indices, :]
+        # Simulate faulty nodes, all ranks will have the same faulty nodes
+        faulty_nodes = self.simulate_faulty_nodes(sub_cluster_size, fault_percentage)
 
-def assign_clusters(data, centroids):
-    distances = np.sqrt(((data - centroids[:, np.newaxis])**2).sum(axis=2))
-    return np.argmin(distances, axis=0)
+        # ------------------ Push Phase ------------------
+        push_start = time.time()
+        
+        def send_prepare(i):
+            if i in faulty_nodes:
+                print(f"Node {i} is faulty and provides a wrong vote.")
+                votes[i] = False
+            else:
+                if data_hash == blk_hash:
+                    temp = parsed_data.copy()
+                    temp['meta'] = {
+                        'validator_node': i,
+                        'coordinator_rank': rank,
+                        'prepare_time': str(date.datetime.now()),
+                        'status': 'PREPARED'
+                    }
+                    temp_commit_data[i] = temp
+                    votes[i] = True
 
-def compute_centroids(data, labels, k):
-    centroids = np.zeros((k, data.shape[1]))
-    for i in range(k):
-        points = data[labels == i]
-        if len(points) > 0:
-            centroids[i] = points.mean(axis=0)
-    return centroids
+        with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
+            executor.map(send_prepare, range(sub_cluster_size))
+
+        committed = False
+        if votes.sum() >= int(sub_cluster_size * 0.51):
+            coordinator_block = parsed_data.copy()
+            coordinator_block['meta'] = {
+                'coordinator_rank': rank,
+                'commit_time': str(date.datetime.now()),
+                'status': 'COORDINATOR_COMMITTED'
+            }
+            pd.DataFrame([coordinator_block]).to_csv(f'output/coordinator_commit_rank_{rank}.csv', index=False)
+            commit_event.set()
+            committed = True
+        
+        push_end = time.time()
+        push_duration = push_end - push_start
+
+        # ------------------ Pull Phase ------------------
+        pull_start = time.time()
+        
+        def receive_commit(i):
+            if votes[i]:
+                commit_event.wait(timeout=3)
+                temp_commit_data[i]['meta']['commit_time'] = str(date.datetime.now())
+                temp_commit_data[i]['meta']['status'] = 'COMMITTED'
+            else:
+                if commit_event.wait(timeout=3):
+                    fallback = parsed_data.copy()
+                    fallback['meta'] = {
+                        'coordinator_rank': rank,
+                        'node_id': i,
+                        'commit_time': str(date.datetime.now()),
+                        'status': 'COMMIT_READ_FROM_LEDGER'
+                    }
+                    temp_commit_data[i] = fallback
+
+        with ThreadPoolExecutor(max_workers=sub_cluster_size) as executor:
+            executor.map(receive_commit, range(sub_cluster_size))
+        
+        pull_end = time.time()
+        pull_duration = pull_end - pull_start   
+
+        pd.DataFrame(temp_commit_data).to_csv(f'output/subcluster_all_nodes_coordinator_{rank}.csv', index=False)
+
+        if committed:
+            self.add_block(block)
+
+        # Calculate consensus success rate
+        consensus_rate = self.consensus_success_rate(sub_cluster_size, len(faulty_nodes), int(sub_cluster_size * 0.51))
+        print(f"Consensus Success Rate: {consensus_rate * 100:.2f}%")
+
+        return committed, push_duration, pull_duration
+
 
 def hash_data(data):
-    data_string = json.dumps(data)
-    return hashlib.sha256(data_string.encode()).hexdigest()
+    return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
 def data_validation(block):
-    content = json.loads(block.data)
-    return hash_data(content['data']) == content['hash']
+    try:
+        content = json.loads(block.data)
+        return hash_data(content['data']) == content['hash']
+    except:
+        return False
 
-def parallel_kmeans_with_blockchain(filepath, k=5, n_components=17, num_steps=100, local_steps=10, mse_threshold=0.01):
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    start_time = MPI.Wtime()
+class KMeansProcessor:
+    def __init__(self, k=5, num_steps=100):
+        self.k = k
+        self.num_steps = num_steps
 
-    data, id_col, diag_col = load_and_preprocess_data(filepath)
+    def initialize_centroids(self, data):
+        indices = np.random.choice(data.shape[0], size=self.k, replace=False)
+        return data[indices]
 
-    if rank == 0:
-        passed, reduced_data, mse = evaluate_pca_quality(data)
-        if not passed:
-            print(f"PCA MSE too high: {mse:.6f}")
-            sys.exit()
-    else:
-        reduced_data = None
+    def assign_clusters(self, data, centroids):
+        distances = np.linalg.norm(data[:, np.newaxis] - centroids, axis=2)
+        return np.argmin(distances, axis=1)
 
-    data = comm.bcast(reduced_data if rank == 0 else None, root=0)
-    id_col = comm.bcast(id_col, root=0)
-    diag_col = comm.bcast(diag_col, root=0)
+    def compute_centroids(self, data, labels):
+        centroids = np.zeros((self.k, data.shape[1]))
+        for i in range(self.k):
+            cluster = data[labels == i]
+            if len(cluster) > 0:
+                centroids[i] = np.mean(cluster, axis=0)
+        return centroids
 
-    data_split = np.array_split(data, size, axis=0)
-    local_data = data_split[rank]
+    def run(self, local_data, comm, global_data=None):
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+        centroids = self.initialize_centroids(global_data) if rank == 0 else None
+        centroids = comm.bcast(centroids, root=0)
 
-    centroids = initialize_centroids(data, k) if rank == 0 else None
-    centroids = comm.bcast(centroids, root=0)
+        for _ in range(self.num_steps):
+            labels = self.assign_clusters(local_data, centroids)
+            local_centroids = self.compute_centroids(local_data, labels)
+            global_centroids = np.zeros_like(local_centroids)
+            comm.Allreduce(local_centroids, global_centroids, op=MPI.SUM)
+            centroids = global_centroids / size
+            
+        clustered_data = np.column_stack((local_data, labels))
+        return clustered_data
 
-    for i in range(num_steps):
-        local_labels = assign_clusters(local_data, centroids)
-        local_centroids = compute_centroids(local_data, local_labels, k)
-        if (i + 1) % local_steps == 0 or i == num_steps - 1:
-            all_centroids = np.zeros_like(local_centroids)
-            comm.Allreduce(local_centroids, all_centroids, op=MPI.SUM)
-            centroids = all_centroids / size
+class ColumnShardProcessor:
+    @staticmethod
+    def distribute_columns(data, comm):
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+        n_cols = data.shape[1]
+        per = n_cols // size
+        rem = n_cols % size
+        start = rank * per + min(rank, rem)
+        end = start + per + (1 if rank < rem else 0)
+        return data[:, start:end]
 
-    blockchain = Blockchain()
-    data_to_commit = local_data.tolist()
-    hash_value = hash_data(data_to_commit)
-    block_data = {
-        'coordinator': rank,
-        'data': data_to_commit,
-        'hash': hash_value
-    }
-    new_block = Block(rank + 1, date.datetime.now(), json.dumps(block_data), "0")
+class KMeansRunner:
+    def __init__(self, filepath, k=5, num_steps=100):
+        self.filepath = filepath
+        self.processor = KMeansProcessor(k, num_steps)
 
-    committed = blockchain.consensus(new_block)
-    if committed:
-        block_df = pd.DataFrame([{
-            'index': new_block.index,
-            'timestamp': new_block.timestamp,
-            'data': new_block.data,
-            'previous_hash': new_block.previous_hash,
-            'hash': new_block.hash
-        }])
+    def execute(self):
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        start = MPI.Wtime()
         
-        block_df.to_csv(f'output/block_coordinator_{rank}.csv', index=False)
+        pre = Preprocessor(self.filepath)
+        data = pre.load_and_scale()
+        fault_percentage = random.random() * 0.49
+        
+        if rank == 0:
+            passed, reduced, mse = pre.apply_pca_and_check(data)
+            if not passed:
+                print(f"PCA MSE too high: {mse:.6f}")
+                sys.exit()
+        else:
+            reduced = None
 
-    comm.Barrier()
-    
-    #Push
-    all_blocks = comm.gather(new_block if committed else None, root=0)
-    if rank == 0:
-        for blk in all_blocks:
-            if blk and blk.hash not in [b.hash for b in blockchain.chain]:
-                blockchain.add_block(blk)
-    
-    #Pull           
-    comm.bcast(blockchain.chain, root=0)
-    if rank == 0:
-        end_time = MPI.Wtime()
-        print("Execution Time: {:.4f} sec".format(end_time - start_time))
-        blockchain.get_chain()
-        print("Blockchain is valid." if blockchain.is_valid() else "Blockchain is invalid!")
-    
+        fault_percentage = comm.bcast(fault_percentage, root=0)
+        reduced = comm.bcast(reduced, root=0)
+        local_data = ColumnShardProcessor.distribute_columns(reduced, comm)
+        local_data = np.array_split(reduced, comm.Get_size())[rank]
+
+        clustered_data = self.processor.run(local_data, comm, reduced)
+
+        blockchain = Blockchain()
+        blk_data = {
+            'coordinator': rank,
+            'data': clustered_data.tolist(),
+            'hash': hash_data(clustered_data.tolist())
+        }
+        blk = Block(rank + 1, date.datetime.now(), json.dumps(blk_data), "0")
+        committed, push_duration, pull_duration = blockchain.consensus(blk, rank, fault_percentage)
+        
+        end = MPI.Wtime()
+        
+        push_times = comm.gather(push_duration, root=0)
+        pull_times = comm.gather(pull_duration, root=0)
+        
+        all_blocks = comm.gather(blk if committed else None, root=0)
+        
+        if rank == 0:
+            for b in all_blocks:
+                if b and b.hash not in [blk.hash for blk in blockchain.chain]:
+                    blockchain.add_block(b)
+            total_vectors = reduced.shape[0]        
+            avg_push = sum(push_times) / len(push_times)
+            avg_pull = sum(pull_times) / len(pull_times)
+            
+            print(f"[Average] Push phase: {avg_push:.6f} sec, Pull phase: {avg_pull:.6f} sec")
+            print(f"[K-means mode] Execution Time: {end - start:.4f} sec")
+            print(f"[K-means mode] Throughput: {total_vectors / (end - start):.2f} vectors/sec")
+            blockchain.get_chain()
+            print("Blockchain is valid." if blockchain.is_valid() else "Blockchain is invalid!")
+
+class ColumnShardRunner:
+    def __init__(self, filepath):
+        self.filepath = filepath
+
+    def execute(self):
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        start = MPI.Wtime()
+
+        pre = Preprocessor(self.filepath)
+        data = pre.load_and_scale()
+        fault_percentage = random.random() * 0.49
+        
+        if rank == 0:
+            passed, reduced, mse = pre.apply_pca_and_check(data)
+            if not passed:
+                print(f"PCA MSE too high: {mse:.6f}")
+                sys.exit()
+        else:
+            reduced = None
+        fault_percentage = comm.bcast(fault_percentage, root=0)
+        reduced = comm.bcast(reduced, root=0)
+        local_data = ColumnShardProcessor.distribute_columns(reduced, comm)
+
+        blockchain = Blockchain()
+        blk_data = {
+            'coordinator': rank,
+            'data': local_data.tolist(),
+            'hash': hash_data(local_data.tolist())
+        }
+        blk = Block(rank + 1001, date.datetime.now(), json.dumps(blk_data), "0")
+        committed, push_duration, pull_duration = blockchain.consensus(blk, rank, fault_percentage)
+        
+        end = MPI.Wtime()
+        
+        push_times = comm.gather(push_duration, root=0)
+        pull_times = comm.gather(pull_duration, root=0)
+        
+        all_blocks = comm.gather(blk if committed else None, root=0)
+        if rank == 0:
+            for b in all_blocks:
+                if b and b.hash not in [blk.hash for blk in blockchain.chain]:
+                    blockchain.add_block(b)
+            total_vectors = reduced.shape[0]
+            avg_push = sum(push_times) / len(push_times)
+            avg_pull = sum(pull_times) / len(pull_times)
+            
+            print(f"[Average] Push phase: {avg_push:.6f} sec, Pull phase: {avg_pull:.6f} sec")
+            print(f"[Column mode] Execution Time: {end - start:.4f} sec")
+            print(f"Column mode] Throughput: {total_vectors / (end - start):.2f} vectors/sec")
+            blockchain.get_chain()
+            print("Blockchain is valid." if blockchain.is_valid() else "Blockchain is invalid!")
+
 if __name__ == "__main__":
-    filepath = 'wdbc.csv'
-    parallel_kmeans_with_blockchain(filepath)
+    filepath = 'dataset.csv'
+    KMeansRunner(filepath).execute()
