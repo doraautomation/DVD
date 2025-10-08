@@ -3,7 +3,7 @@ Distributed Vector Data Management system with High-Performance Distributed Ledg
 
 # Features:
 
-- Feature reduction using Principal Component Analysis (PCA)
+- Adaptive feature reduction using Principal Component Analysis
 - Clustering with Parallel K-Means
 - Feature-based sharding — splitting the dataset across nodes by feature columns
 - Blockchain-style validation using a two-phase commit simulated with python code
