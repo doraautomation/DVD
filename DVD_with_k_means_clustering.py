@@ -19,7 +19,7 @@ import hyperloglog
 os.makedirs('output', exist_ok=True)
 
 class Preprocessor:
-    def __init__(self, filepath, n_components=169, mse_threshold=0.01):
+    def __init__(self, filepath, n_components=180, mse_threshold=0.01):
         self.filepath = filepath
         self.n_components = n_components
         self.mse_threshold = mse_threshold
