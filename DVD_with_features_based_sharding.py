@@ -31,15 +31,6 @@ class Preprocessor:
         return StandardScaler().fit_transform(features)
 
     def apply_pca_and_check(self, data):
-        """
-        Returns a dict including:
-          - reduced vectors
-          - reconstructed vectors (optional use)
-          - reconstruction MSE
-          - encoding time (fit+transform)
-          - reconstruction time (inverse_transform)
-          - dims
-        """
         pca = PCA(n_components=self.n_components)
 
         # Encoding: fit + transform
@@ -194,11 +185,6 @@ def expander_gossip_or_int(
 
 
 def pack_decision(committed: bool, known: bool) -> int:
-    """
-    2-bit encoding:
-      bit0 = known flag
-      bit1 = decision value (1=commit, 0=abort)
-    """
     return (1 if known else 0) | ((1 if committed else 0) << 1)
 
 
@@ -447,7 +433,6 @@ def data_validation(block):
     except Exception:
         return False
 
-
 class KMeansProcessor:
     def __init__(self, k=5, num_steps=100):
         self.k = k
@@ -523,7 +508,6 @@ class KMeansRunner:
 
             reduced = pca_result["reduced"]
 
-            # (3) Log to file (rank 0 only)
             pd.DataFrame([{
                 "timestamp": str(date.datetime.now()),
                 "original_dim": pca_result["original_dim"],
