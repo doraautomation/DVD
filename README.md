@@ -1,20 +1,20 @@
 # DVD
 Distributed Vector Data Management system with High-Performance Distributed Ledgers for Scientific Computing.
 
-# Features:
+# Features
+- **Semantic Clustering via Parallel K-Means**  
+  Partitions high-dimensional vectors into similarity-preserving shards, 
+  ensuring balanced load distribution across distributed nodes.
 
-    \item Semantic clustering via Parallel K-Means to partition high-dimensional 
-    vectors into similarity-preserving shards with balanced load distribution 
-    across distributed nodes.
-    
-    \item Lightweight block construction and tamper-evident validation through 
-    a two-phase LiteQuorum consensus protocol, where MPI distributes tasks 
-    across processes to simulate sub-cluster committee-based consensus.
-    
-    \item Hybrid on-chain/off-chain ledger management, where raw vector shard 
-    data resides in off-chain distributed storage and only lightweight shard 
-    metadata blocks are committed on-chain, ensuring tamper-evident provenance 
-    without excessive storage overhead.
+- **Lightweight Block Construction & Tamper-Evident Validation**  
+  Implements a two-phase LiteQuorum consensus protocol, leveraging MPI 
+  to distribute tasks across processes and simulate sub-cluster 
+  committee-based consensus.
+
+- **Hybrid On-Chain/Off-Chain Ledger Management**  
+  Raw vector shard data resides in off-chain distributed storage, while 
+  only lightweight shard metadata blocks are committed on-chain, ensuring 
+  tamper-evident provenance without excessive storage overhead.
 
 ## Development Setup
 DVD should be run using python.
@@ -37,7 +37,7 @@ Run the Project Locally
 After installing the dependencies, you can run the project using `mpiexec`.
 Here’s an example with 4 processes:
 ```bash
-mpiexec -n 4 python DVD_with.py 
+mpiexec -n 4 python DVD.py 
 ```
 Run on HPC with SLURM
 
