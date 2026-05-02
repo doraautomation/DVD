@@ -1,5 +1,5 @@
 # DVD
-Distributed Vector Data Management system with High-Performance Distributed Ledgers for Scientific Computing.
+DVD: Efficient and Reliable Large-Scale High-Dimensional Vector Data Management for Scientific Computing
 
 # Features
 - **Semantic Clustering via Parallel K-Means**  
