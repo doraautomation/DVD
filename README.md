@@ -30,7 +30,7 @@ Run the Project Locally
 After installing the dependencies, you can run the project using `mpiexec`.
 Here’s an example with 4 processes:
 ```bash
-mpiexec -n 4 python DVD_with_features_based_sharding.py **or** DVD_with_k_means_clustering.py
+mpiexec -n 4 python DVD_with.py 
 ```
 Run on HPC with SLURM
 
