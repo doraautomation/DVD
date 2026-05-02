@@ -435,26 +435,6 @@ def run_minimum_verification(
     return summary
 
 
-# -----------------------------------------------------------------------------
-#  INDEPENDENT VALIDATION RANK
-#
-#  Problem solved:
-#    The old code let the proposer rank build both the block AND verification_ctx
-#    from the same data, so a compromised rank could forge both simultaneously.
-#
-#  Solution:
-#    Validator rank = (proposer_rank + 1) % size
-#    The validator receives the raw shard data over MPI, independently
-#    recomputes all hashes (data, centroid, merkle_root, vector_ids), and
-#    returns a verification_ctx the proposer never touched.
-#
-#  MPI tag layout:
-#    VALIDATION_TAG + 0  proposer -> validator  header  [shard_id, nrows, ncols]
-#    VALIDATION_TAG + 1  proposer -> validator  raw shard array
-#    VALIDATION_TAG + 2  validator -> proposer  ctx byte-length
-#    VALIDATION_TAG + 3  validator -> proposer  ctx JSON bytes
-# -----------------------------------------------------------------------------
-
 def build_all_verification_ctxs(comm, rank: int, size: int,
                                 local_shard_map: dict, owned_shards: list) -> dict:
     """
@@ -516,43 +496,8 @@ def build_all_verification_ctxs(comm, rank: int, size: int,
         len(all_descriptors[2]) + len(all_descriptors[3])
     ) if sid % size == proposer_rank]
 
-    # Simpler: gather which shard_ids proposer_rank owns
     proposer_owned = [d["shard_id"] for d in all_descriptors[proposer_rank]]
 
-    # Each rank builds validation_ctxs for the proposer's shards using the
-    # raw data it already holds locally.  But we only hold our OWN shards.
-    # So the correct pattern is: share raw hashes via allgather and trust
-    # a *different* rank's independently computed hash as the validator.
-    #
-    # Since allgather already shared hashes from every rank, we assign:
-    #   validator for rank R's shard = descriptor recomputed by rank (R+1)%size
-    # Each rank computes descriptors for ALL shards it sees in its local_shard_map
-    # (which is only its own shards), then allgather gives everyone everything.
-    # The ctx for rank R's shard comes from rank (R+1)%size's allgather contribution
-    # IF rank (R+1)%size also computed that shard's hashes independently.
-    #
-    # The clean implementation: each rank sends its OWN hashes via allgather,
-    # then its validator (rank+1) independently recomputes hashes from the
-    # *same* raw shard_map data it received via redistribute_shards.
-    # Since redistribute_shards already gave each rank its correct shards,
-    # we use a second allgather where each rank recomputes hashes for the
-    # shards owned by (rank-1)%size using data received via MPI sendrecv
-    # on the already-distributed shard data.
-    #
-    # PRACTICAL SOLUTION used here:
-    # Use allgather of hashes.  Assign validator = rank (rank+1)%size.
-    # The validator's "independent" hash is: rank (rank+1)%size recomputes
-    # hashes for shard_ids it owns in its own local_shard_map.
-    # For shard_ids it does NOT own, it cannot recompute -- so we use a
-    # lightweight sendrecv of just the hash scalars (not raw vectors) to
-    # let each rank get a hash computed by its neighbour.
-
-    # Each rank computes hashes for its OWN shards and shares via allgather
-    # (already done above in local_descriptors / all_descriptors).
-    # Now each rank acts as validator for (rank-1)%size's shards by
-    # receiving those shards' raw data via sendrecv and recomputing hashes.
-
-    # Collect all shard raw data to send to validator_rank
     my_payload = []
     for shard_id in owned_shards:
         sv = np.asarray(local_shard_map[shard_id], dtype=np.float64)
@@ -680,9 +625,9 @@ class Blockchain:
                 "failure_reason": None, "checked_blocks": len(self.chain)}
 
 
-# -----------------------------------------------------------------------------
-#  DistributedKMeans  (unchanged from original)
-# -----------------------------------------------------------------------------
+# ---------------------------------------
+#  DistributedKMeans  
+# -----------------------------------------
 
 class DistributedKMeans:
     def __init__(self, k=5, num_steps=100, seed=42, tol=1e-3, verbose=True, print_every=5):
@@ -746,9 +691,9 @@ class DistributedKMeans:
         return self.assign_clusters(local_data, centroids), centroids, global_counts, local_counts
 
 
-# -----------------------------------------------------------------------------
-#  build_metadata_block  -- standard pattern: merkle_root on-chain, leaves off-chain
-# -----------------------------------------------------------------------------
+# --------------------------
+#  build_metadata_block  
+# ---------------------------
 
 def build_metadata_block(rank, shard_id, shard_vectors, shard_file):
     shard_vectors = np.asarray(shard_vectors, dtype=np.float64)
@@ -783,10 +728,6 @@ def build_metadata_block(rank, shard_id, shard_vectors, shard_file):
         "offchain_ref":      os.path.basename(shard_file),      # pointer to raw .npy
     }
 
-
-# -----------------------------------------------------------------------------
-#  PushPullHashConsensus
-# -----------------------------------------------------------------------------
 
 class PushPullHashConsensus:
     def __init__(
@@ -1069,13 +1010,7 @@ class PushPullHashConsensus:
 
 
 class TamperDetectionExperiment:
-    """
-    Post-consensus tamper-detection experiment. Operates on the artifacts
-    that runner.execute() has already written to output_dir:
-        blockchain.json
-        shards/shard_<sid>.npy
-    """
-
+  
     SHARD_ATTACKS = ["A1_row_tamper", "A2_centroid_tamper",
                      "A3_data_hash_forgery", "A4_replay"]
     CHAIN_ATTACKS = ["A5_reorder", "A6_blockhash_tamper"]
@@ -1415,9 +1350,6 @@ class DistributedKMeansRunner:
             max_drift_sec    = self.max_drift_sec,
         )
 
-        # Independent ctx exchange -- one collective round before the shard loop
-        # Uses comm.sendrecv (symmetric) so all ranks participate simultaneously
-        # regardless of how many shards each rank owns. No deadlock possible.
         if size > 1:
             all_vctxs = build_all_verification_ctxs(
                 comm, rank, size, local_shard_map, owned
@@ -1611,7 +1543,7 @@ class DistributedKMeansRunner:
             print(f"Throughput:             {total_vectors / total_time:.2f} vectors/sec")
 
             # ---------------------------------------------------------------
-            # Tamper detection experiment (rank 0 only, after consensus)
+            # Tamper detection experiment 
             # ---------------------------------------------------------------
             if self.run_tamper_experiment:
                 exp = TamperDetectionExperiment(
@@ -1625,7 +1557,7 @@ class DistributedKMeansRunner:
 
 if __name__ == "__main__":
     runner = DistributedKMeansRunner(
-        csv_path          = "data4.csv",
+        csv_path          = "data.csv",
         k                 = 5,
         num_steps         = 100,
         seed              = 42,
